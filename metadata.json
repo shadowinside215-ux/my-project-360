@@ -1,6 +1,6 @@
 {
-  "name": "360 Panorama Creator",
-  "description": "Capture photos and stitch them into interactive 360 panoramas using your phone camera and Three.js.",
+  "name": "PanoStudio",
+  "description": "A complete 360 photo capture and viewer app using vanilla JavaScript and Three.js.",
   "requestFramePermissions": [
     "camera"
   ]

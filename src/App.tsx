@@ -1,16 +1,28 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import * as THREE from 'three';
-import { Camera, Image as ImageIcon, RotateCcw, Download, Eye, Plus, Trash2, Check, X } from 'lucide-react';
+import { Camera, Image as ImageIcon, RotateCcw, Download, Eye, Plus, Trash2, Check, X, Compass, Target } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // --- Types ---
 interface CapturedPhoto {
   id: string;
   blob: string;
-  timestamp: number;
+  pitch: number; // Vertical angle (-90 to 90)
+  yaw: number;   // Horizontal angle (0 to 360)
+}
+
+interface CaptureTarget {
+  pitch: number;
+  yaw: number;
+  captured: boolean;
 }
 
 type AppMode = 'capture' | 'view';
+
+// --- Constants ---
+const TARGET_PITCHES = [-45, 0, 45]; // Three rows
+const TARGET_YAWS = [0, 45, 90, 135, 180, 225, 270, 315]; // 8 photos per row
+const TOTAL_TARGETS = TARGET_PITCHES.length * TARGET_YAWS.length;
 
 // --- Components ---
 
@@ -32,7 +44,6 @@ const PanoramaViewer = ({ imageUrl }: { imageUrl: string }) => {
   useEffect(() => {
     if (!containerRef.current) return;
 
-    // Scene setup
     const scene = new THREE.Scene();
     sceneRef.current = scene;
 
@@ -45,9 +56,8 @@ const PanoramaViewer = ({ imageUrl }: { imageUrl: string }) => {
     containerRef.current.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
-    // Sphere setup
     const geometry = new THREE.SphereGeometry(500, 60, 40);
-    geometry.scale(-1, 1, 1); // Invert the sphere so we are inside
+    geometry.scale(-1, 1, 1);
 
     const texture = new THREE.TextureLoader().load(imageUrl);
     const material = new THREE.MeshBasicMaterial({ map: texture });
@@ -98,17 +108,14 @@ const PanoramaViewer = ({ imageUrl }: { imageUrl: string }) => {
 
     const animate = () => {
       requestAnimationFrame(animate);
-
       lat.current = Math.max(-85, Math.min(85, lat.current));
       phi.current = THREE.MathUtils.degToRad(90 - lat.current);
       theta.current = THREE.MathUtils.degToRad(lon.current);
-
       cameraTarget.set(
         500 * Math.sin(phi.current) * Math.cos(theta.current),
         500 * Math.cos(phi.current),
         500 * Math.sin(phi.current) * Math.sin(theta.current)
       );
-
       camera.lookAt(cameraTarget);
       renderer.render(scene, camera);
     };
@@ -138,26 +145,61 @@ export default function App() {
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [stitchedImage, setStitchedImage] = useState<string | null>(null);
   const [isStitching, setIsStitching] = useState(false);
+  const [orientation, setOrientation] = useState({ alpha: 0, beta: 0, gamma: 0 });
+  const [cameraError, setCameraError] = useState<string | null>(null);
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
+  // --- Orientation Logic ---
+  useEffect(() => {
+    const handleOrientation = (event: DeviceOrientationEvent) => {
+      setOrientation({
+        alpha: event.alpha || 0, // Yaw (0-360)
+        beta: event.beta || 0,   // Pitch (-180 to 180)
+        gamma: event.gamma || 0  // Roll (-90 to 90)
+      });
+    };
+
+    if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
+      // iOS 13+ requires permission
+      (DeviceOrientationEvent as any).requestPermission()
+        .then((response: string) => {
+          if (response === 'granted') {
+            window.addEventListener('deviceorientation', handleOrientation);
+          }
+        })
+        .catch(console.error);
+    } else {
+      window.addEventListener('deviceorientation', handleOrientation);
+    }
+
+    return () => window.removeEventListener('deviceorientation', handleOrientation);
+  }, []);
+
   // --- Camera Logic ---
   const startCamera = async () => {
+    setCameraError(null);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: 'environment' }, 
-        audio: false 
-      });
+      const constraints = {
+        video: {
+          facingMode: 'environment',
+          width: { ideal: 1920 },
+          height: { ideal: 1080 }
+        },
+        audio: false
+      };
+      
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         streamRef.current = stream;
         setIsCameraActive(true);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error accessing camera:", err);
-      alert("Could not access camera. Please check permissions.");
+      setCameraError(err.message || "Could not access camera. Please ensure you have granted permissions.");
     }
   };
 
@@ -179,10 +221,13 @@ export default function App() {
         canvas.height = video.videoHeight;
         context.drawImage(video, 0, 0, canvas.width, canvas.height);
         const blob = canvas.toDataURL('image/jpeg', 0.8);
+        
+        // Use current orientation for mapping
         setPhotos(prev => [...prev, {
           id: Math.random().toString(36).substr(2, 9),
           blob,
-          timestamp: Date.now()
+          pitch: orientation.beta,
+          yaw: orientation.alpha
         }]);
       }
     }
@@ -193,15 +238,11 @@ export default function App() {
   };
 
   // --- Stitching Logic ---
-  // A simplified "stitcher" that maps photos into a grid.
-  // In a real scenario, this would use feature matching, but for a vanilla JS app,
-  // we'll assume the user takes photos in a sequence that we can map to a panorama.
   const buildPanorama = async () => {
     if (photos.length === 0) return;
     setIsStitching(true);
 
     try {
-      // We'll create an equirectangular canvas (2:1 ratio)
       const panoWidth = 4096;
       const panoHeight = 2048;
       const panoCanvas = document.createElement('canvas');
@@ -211,18 +252,8 @@ export default function App() {
 
       if (!ctx) throw new Error("Could not get canvas context");
 
-      // Fill with black
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, panoWidth, panoHeight);
-
-      // Simple grid mapping:
-      // We'll divide the panorama into a grid based on the number of photos.
-      // This is a naive approach but fits the "single file / vanilla" constraint.
-      // Ideally, the user takes photos in a specific order.
-      const cols = Math.ceil(Math.sqrt(photos.length * 2));
-      const rows = Math.ceil(photos.length / cols);
-      const cellWidth = panoWidth / cols;
-      const cellHeight = panoHeight / rows;
 
       const loadImg = (src: string): Promise<HTMLImageElement> => {
         return new Promise((resolve) => {
@@ -232,14 +263,30 @@ export default function App() {
         });
       };
 
-      for (let i = 0; i < photos.length; i++) {
-        const img = await loadImg(photos[i].blob);
-        const col = i % cols;
-        const row = Math.floor(i / cols);
+      // Sort photos by pitch then yaw for better layering
+      const sortedPhotos = [...photos].sort((a, b) => a.pitch - b.pitch || a.yaw - b.yaw);
+
+      for (const photo of sortedPhotos) {
+        const img = await loadImg(photo.blob);
         
-        // Draw with some overlap/blending if we wanted to be fancy,
-        // but let's stick to a clean grid for now.
-        ctx.drawImage(img, col * cellWidth, row * cellHeight, cellWidth, cellHeight);
+        // Map pitch/yaw to x/y
+        // Pitch: -90 to 90 -> 0 to panoHeight
+        // Yaw: 0 to 360 -> 0 to panoWidth
+        const x = ((photo.yaw % 360) / 360) * panoWidth;
+        const y = ((photo.pitch + 90) / 180) * panoHeight;
+        
+        const drawWidth = panoWidth / 4; // Assume 4 photos cover the width roughly
+        const drawHeight = panoHeight / 3; // Assume 3 rows cover height
+        
+        ctx.drawImage(img, x - drawWidth/2, y - drawHeight/2, drawWidth, drawHeight);
+        
+        // Handle wrap-around for yaw
+        if (x + drawWidth/2 > panoWidth) {
+          ctx.drawImage(img, x - drawWidth/2 - panoWidth, y - drawHeight/2, drawWidth, drawHeight);
+        }
+        if (x - drawWidth/2 < 0) {
+          ctx.drawImage(img, x - drawWidth/2 + panoWidth, y - drawHeight/2, drawWidth, drawHeight);
+        }
       }
 
       const result = panoCanvas.toDataURL('image/jpeg', 0.9);
@@ -268,9 +315,36 @@ export default function App() {
     }
   };
 
+  // --- Guidance UI ---
+  // Find the nearest target that hasn't been captured
+  const targets: CaptureTarget[] = [];
+  TARGET_PITCHES.forEach(p => {
+    TARGET_YAWS.forEach(y => {
+      const isCaptured = photos.some(photo => 
+        Math.abs(photo.pitch - p) < 15 && Math.abs(((photo.yaw - y + 540) % 360) - 180) < 15
+      );
+      targets.push({ pitch: p, yaw: y, captured: isCaptured });
+    });
+  });
+
+  const nextTarget = targets.find(t => !t.captured);
+  
+  // Calculate relative position for the blue circle
+  // We'll map the next target's pitch/yaw relative to current orientation
+  const getTargetStyle = (target: CaptureTarget) => {
+    const dy = target.pitch - orientation.beta;
+    const dx = ((target.yaw - orientation.alpha + 540) % 360) - 180;
+    
+    // Simple projection for UI
+    const scale = 10;
+    return {
+      transform: `translate(${dx * scale}px, ${dy * scale}px)`,
+      opacity: Math.max(0, 1 - (Math.sqrt(dx*dx + dy*dy) / 40))
+    };
+  };
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-indigo-500/30">
-      {/* Header */}
       <header className="fixed top-0 left-0 right-0 z-50 bg-zinc-950/80 backdrop-blur-md border-b border-zinc-800 px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
@@ -305,114 +379,130 @@ export default function App() {
               exit={{ opacity: 0, y: -10 }}
               className="flex-1 flex flex-col p-4 gap-4 overflow-hidden"
             >
-              {/* Camera Preview / Placeholder */}
-              <div className="relative aspect-video bg-zinc-900 rounded-2xl overflow-hidden border border-zinc-800 shadow-2xl group">
+              {/* Camera Preview with Guidance */}
+              <div className="relative aspect-[3/4] sm:aspect-video bg-zinc-900 rounded-2xl overflow-hidden border border-zinc-800 shadow-2xl">
                 {isCameraActive ? (
-                  <video 
-                    ref={videoRef} 
-                    autoPlay 
-                    playsInline 
-                    className="w-full h-full object-cover"
-                  />
+                  <>
+                    <video 
+                      ref={videoRef} 
+                      autoPlay 
+                      playsInline 
+                      className="w-full h-full object-cover"
+                    />
+                    
+                    {/* Guidance Overlay */}
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      {/* Center Pinpoint */}
+                      <div className="w-8 h-8 border-2 border-white/50 rounded-full flex items-center justify-center">
+                        <div className="w-1 h-1 bg-white rounded-full" />
+                      </div>
+
+                      {/* Target Circle */}
+                      {nextTarget && (
+                        <motion.div 
+                          style={getTargetStyle(nextTarget)}
+                          className="absolute w-12 h-12 border-4 border-indigo-500 rounded-full flex items-center justify-center bg-indigo-500/20"
+                        >
+                          <Target className="w-6 h-6 text-indigo-400" />
+                        </motion.div>
+                      )}
+                    </div>
+
+                    {/* Orientation Debug/Info */}
+                    <div className="absolute top-4 right-4 bg-black/60 backdrop-blur-md px-3 py-1.5 rounded-lg text-[10px] font-mono flex flex-col gap-1">
+                      <div className="flex justify-between gap-4">
+                        <span className="text-zinc-400">PITCH</span>
+                        <span>{Math.round(orientation.beta)}°</span>
+                      </div>
+                      <div className="flex justify-between gap-4">
+                        <span className="text-zinc-400">YAW</span>
+                        <span>{Math.round(orientation.alpha)}°</span>
+                      </div>
+                    </div>
+                  </>
                 ) : (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-zinc-500">
-                    <Camera className="w-12 h-12 opacity-20" />
-                    <button 
-                      onClick={startCamera}
-                      className="px-6 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full font-medium transition-colors shadow-lg shadow-indigo-600/20"
-                    >
-                      Open Camera
-                    </button>
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-zinc-500 p-6 text-center">
+                    {cameraError ? (
+                      <div className="flex flex-col items-center gap-3">
+                        <X className="w-12 h-12 text-red-500 opacity-50" />
+                        <p className="text-sm text-red-400">{cameraError}</p>
+                        <button 
+                          onClick={startCamera}
+                          className="px-6 py-2 bg-zinc-800 text-white rounded-full font-medium"
+                        >
+                          Try Again
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <Camera className="w-12 h-12 opacity-20" />
+                        <p className="text-sm">Allow camera access to start capturing your 360 world</p>
+                        <button 
+                          onClick={startCamera}
+                          className="px-6 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full font-medium transition-colors shadow-lg shadow-indigo-600/20"
+                        >
+                          Open Camera
+                        </button>
+                      </>
+                    )}
                   </div>
                 )}
                 
                 {isCameraActive && (
-                  <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-4">
+                  <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-6">
                     <button 
                       onClick={capturePhoto}
-                      className="w-16 h-16 bg-white rounded-full border-4 border-zinc-300 active:scale-95 transition-transform flex items-center justify-center shadow-xl"
+                      className="w-20 h-20 bg-white rounded-full border-4 border-zinc-300 active:scale-95 transition-transform flex items-center justify-center shadow-2xl"
                     >
-                      <div className="w-12 h-12 bg-white rounded-full border-2 border-zinc-800" />
+                      <div className="w-14 h-14 bg-white rounded-full border-2 border-zinc-800 flex items-center justify-center">
+                        <Plus className="w-8 h-8 text-zinc-800" />
+                      </div>
                     </button>
                     <button 
                       onClick={stopCamera}
-                      className="absolute -right-12 top-1/2 -translate-y-1/2 w-10 h-10 bg-zinc-900/80 backdrop-blur-md rounded-full flex items-center justify-center text-zinc-400 hover:text-white"
+                      className="w-12 h-12 bg-zinc-900/80 backdrop-blur-md rounded-full flex items-center justify-center text-zinc-400 hover:text-white border border-zinc-700"
                     >
-                      <X className="w-5 h-5" />
+                      <X className="w-6 h-6" />
                     </button>
                   </div>
                 )}
               </div>
 
-              {/* Photo List */}
-              <div className="flex-1 flex flex-col gap-3 overflow-hidden">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider flex items-center gap-2">
-                    <ImageIcon className="w-4 h-4" />
-                    Captured Photos ({photos.length})
-                  </h2>
-                  {photos.length > 0 && (
-                    <button 
-                      onClick={resetCapture}
-                      className="text-xs text-zinc-500 hover:text-red-400 flex items-center gap-1 transition-colors"
-                    >
-                      <RotateCcw className="w-3 h-3" />
-                      Clear All
-                    </button>
-                  )}
+              {/* Progress & Stats */}
+              <div className="flex items-center justify-between px-2">
+                <div className="flex flex-col">
+                  <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">Progress</span>
+                  <span className="text-lg font-bold text-indigo-400">{photos.length} / {TOTAL_TARGETS} <span className="text-xs text-zinc-600 font-normal">photos</span></span>
                 </div>
-
-                <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
-                  {photos.length === 0 ? (
-                    <div className="h-full flex flex-col items-center justify-center text-zinc-600 border-2 border-dashed border-zinc-800 rounded-2xl">
-                      <Plus className="w-8 h-8 mb-2 opacity-20" />
-                      <p className="text-sm">Take photos to start building your 360 view</p>
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
-                      {photos.map((photo, idx) => (
-                        <motion.div 
-                          layout
-                          key={photo.id}
-                          initial={{ scale: 0.8, opacity: 0 }}
-                          animate={{ scale: 1, opacity: 1 }}
-                          className="relative aspect-square rounded-xl overflow-hidden border border-zinc-800 group"
-                        >
-                          <img src={photo.blob} alt={`Capture ${idx}`} className="w-full h-full object-cover" />
-                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                            <button 
-                              onClick={() => deletePhoto(photo.id)}
-                              className="p-2 bg-red-500 text-white rounded-full hover:bg-red-600 transition-colors"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                          <div className="absolute top-1 left-1 bg-black/60 backdrop-blur-md text-[10px] px-1.5 py-0.5 rounded-md font-mono">
-                            #{idx + 1}
-                          </div>
-                        </motion.div>
-                      ))}
-                    </div>
-                  )}
+                <div className="h-2 flex-1 mx-6 bg-zinc-900 rounded-full overflow-hidden border border-zinc-800">
+                  <motion.div 
+                    initial={{ width: 0 }}
+                    animate={{ width: `${(photos.length / TOTAL_TARGETS) * 100}%` }}
+                    className="h-full bg-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.5)]"
+                  />
                 </div>
+                <Compass className="w-5 h-5 text-zinc-700" />
               </div>
 
               {/* Action Bar */}
-              <div className="mt-auto pt-4 border-t border-zinc-800 flex gap-3">
+              <div className="mt-auto pt-4 border-t border-zinc-800">
                 <button 
-                  disabled={photos.length < 2 || isStitching}
+                  disabled={photos.length < 4 || isStitching}
                   onClick={buildPanorama}
-                  className="flex-1 py-4 bg-indigo-600 disabled:bg-zinc-800 disabled:text-zinc-600 text-white rounded-2xl font-bold text-lg flex items-center justify-center gap-2 shadow-xl shadow-indigo-600/20 active:scale-[0.98] transition-all"
+                  className="w-full py-4 bg-indigo-600 disabled:bg-zinc-800 disabled:text-zinc-600 text-white rounded-2xl font-bold text-lg flex flex-col items-center justify-center shadow-xl shadow-indigo-600/20 active:scale-[0.98] transition-all"
                 >
                   {isStitching ? (
-                    <>
+                    <div className="flex items-center gap-2">
                       <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                      Stitching...
-                    </>
+                      Stitching Panorama...
+                    </div>
                   ) : (
                     <>
-                      <Check className="w-6 h-6" />
-                      Build 360 Panorama
+                      <div className="flex items-center gap-2">
+                        <Check className="w-6 h-6" />
+                        Build 360 Panorama
+                      </div>
+                      <span className="text-[10px] opacity-60 font-normal mt-1">Minimum 4 photos required</span>
                     </>
                   )}
                 </button>
@@ -430,27 +520,26 @@ export default function App() {
                 <>
                   <PanoramaViewer imageUrl={stitchedImage} />
                   
-                  {/* Overlay Controls */}
-                  <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex gap-4 z-10">
+                  <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex gap-4 z-10 w-full px-4 max-w-md">
                     <button 
                       onClick={downloadPanorama}
-                      className="px-6 py-3 bg-white/10 backdrop-blur-xl border border-white/20 text-white rounded-full font-medium flex items-center gap-2 hover:bg-white/20 transition-all shadow-2xl"
+                      className="flex-1 py-4 bg-white/10 backdrop-blur-xl border border-white/20 text-white rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-white/20 transition-all shadow-2xl"
                     >
                       <Download className="w-5 h-5" />
-                      Save to Phone
+                      Save
                     </button>
                     <button 
                       onClick={() => setMode('capture')}
-                      className="px-6 py-3 bg-indigo-600 text-white rounded-full font-medium flex items-center gap-2 hover:bg-indigo-500 transition-all shadow-2xl shadow-indigo-600/30"
+                      className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-500 transition-all shadow-2xl shadow-indigo-600/30"
                     >
                       <Plus className="w-5 h-5" />
-                      New Capture
+                      New
                     </button>
                   </div>
 
                   <div className="absolute top-4 left-4 z-10 pointer-events-none">
                     <div className="bg-black/40 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/10 flex items-center gap-2">
-                      <Eye className="w-4 h-4 text-indigo-400" />
+                      <Compass className="w-4 h-4 text-indigo-400 animate-pulse" />
                       <span className="text-xs font-medium text-white/80">Interactive 360 View</span>
                     </div>
                   </div>
@@ -477,24 +566,7 @@ export default function App() {
         </AnimatePresence>
       </main>
 
-      {/* Hidden Canvas for Processing */}
       <canvas ref={canvasRef} className="hidden" />
-
-      <style>{`
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 4px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: transparent;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: #3f3f46;
-          border-radius: 10px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: #52525b;
-        }
-      `}</style>
     </div>
   );
 }

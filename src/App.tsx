@@ -168,6 +168,20 @@ export default function App() {
   const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const handleStartCapture = async () => {
+    if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
+      try {
+        const response = await (DeviceOrientationEvent as any).requestPermission();
+        if (response !== 'granted') {
+          console.warn("Orientation permission denied");
+        }
+      } catch (err) {
+        console.error("Orientation permission error:", err);
+      }
+    }
+    setScreen('capture');
+  };
+
   // --- Orientation Logic ---
   useEffect(() => {
     const handleOrientation = (event: DeviceOrientationEvent) => {
@@ -179,41 +193,35 @@ export default function App() {
     };
 
     if (screen === 'capture') {
-      if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
-        (DeviceOrientationEvent as any).requestPermission()
-          .then((response: string) => {
-            if (response === 'granted') {
-              window.addEventListener('deviceorientation', handleOrientation);
-            }
-          })
-          .catch(console.error);
-      } else {
-        window.addEventListener('deviceorientation', handleOrientation);
-      }
+      window.addEventListener('deviceorientation', handleOrientation);
     }
 
     return () => window.removeEventListener('deviceorientation', handleOrientation);
   }, [screen]);
 
   // --- Camera Logic ---
+  useEffect(() => {
+    if (screen === 'capture') {
+      startCamera();
+    } else {
+      stopCamera();
+    }
+    return () => stopCamera();
+  }, [screen]);
+
   const startCamera = async () => {
     setCameraError(null);
     try {
       const constraints = {
         video: {
           facingMode: 'environment',
-          width: { ideal: 1920 },
-          height: { ideal: 1080 }
         },
         audio: false
       };
       
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        streamRef.current = stream;
-        setIsCameraActive(true);
-      }
+      streamRef.current = stream;
+      setIsCameraActive(true);
     } catch (err: any) {
       console.error("Error accessing camera:", err);
       setCameraError(err.message || "Could not access camera. Please ensure you have granted permissions.");
@@ -227,6 +235,12 @@ export default function App() {
     }
     setIsCameraActive(false);
   };
+
+  useEffect(() => {
+    if (isCameraActive && videoRef.current && streamRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+    }
+  }, [isCameraActive, screen]);
 
   const capturePhoto = () => {
     if (videoRef.current && canvasRef.current) {
@@ -369,7 +383,7 @@ export default function App() {
 
             <div className="w-full max-w-xs space-y-4">
               <button 
-                onClick={() => { setScreen('capture'); startCamera(); }}
+                onClick={handleStartCapture}
                 className="w-full py-5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl font-bold text-lg flex items-center justify-center gap-3 shadow-xl shadow-indigo-600/20 transition-all active:scale-95"
               >
                 <Camera className="w-6 h-6" />

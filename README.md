@@ -1,20 +1,17 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# 360 Panorama Creator
 
-# Run and deploy your AI Studio app
+A mobile-friendly web app to capture, stitch, and view interactive 360-degree panoramas.
 
-This contains everything you need to run your app locally.
+## Features
+- **Capture Mode**: Take multiple photos using your device's camera.
+- **Stitch Mode**: Naive grid-based stitching into an equirectangular panorama.
+- **View Mode**: Interactive 360 viewer using Three.js.
+- **Save**: Download the final panorama as a JPEG.
 
-View your app in AI Studio: https://ai.studio/apps/a5517570-b387-46dd-be02-66b78ba8169b
+## Deployment to Netlify
+1. Connect your GitHub repository to Netlify.
+2. Set the **Build command** to `npm run build`.
+3. Set the **Publish directory** to `dist`.
+4. (Optional) Add your `GEMINI_API_KEY` as an environment variable in Netlify if you plan to use AI features.
 
-## Run Locally
-
-**Prerequisites:**  Node.js
-
-
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+The `netlify.toml` file is already included to handle these settings automatically.

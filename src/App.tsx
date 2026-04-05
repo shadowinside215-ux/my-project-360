@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import * as THREE from 'three';
 import { Camera, Image as ImageIcon, RotateCcw, Download, Eye, Plus, Trash2, Check, X, Compass, Target, Home, Upload } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence } from 'framer-motion';
 
 // --- Types ---
 interface CapturedPhoto {
@@ -40,8 +40,10 @@ const PanoramaViewer = ({ imageUrl, onBack }: { imageUrl: string, onBack: () => 
   const lat = useRef(0);
   const phi = useRef(0);
   const theta = useRef(0);
+  const isMounted = useRef(true);
 
   useEffect(() => {
+    isMounted.current = true;
     if (!containerRef.current) return;
 
     const scene = new THREE.Scene();
@@ -107,6 +109,7 @@ const PanoramaViewer = ({ imageUrl, onBack }: { imageUrl: string, onBack: () => 
     const cameraTarget = new THREE.Vector3(0, 0, 0);
 
     const animate = () => {
+      if (!isMounted.current) return;
       requestAnimationFrame(animate);
       lat.current = Math.max(-85, Math.min(85, lat.current));
       phi.current = THREE.MathUtils.degToRad(90 - lat.current);
@@ -123,6 +126,7 @@ const PanoramaViewer = ({ imageUrl, onBack }: { imageUrl: string, onBack: () => 
     animate();
 
     return () => {
+      isMounted.current = false;
       window.removeEventListener('resize', onResize);
       if (containerRef.current) {
         containerRef.current.removeEventListener('pointerdown', onPointerDown);
@@ -353,7 +357,7 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="h-screen flex flex-col items-center justify-center p-6 gap-8 bg-radial-gradient from-zinc-900 to-zinc-950"
+            className="h-screen flex flex-col items-center justify-center p-6 gap-8 bg-zinc-950"
           >
             <div className="text-center space-y-2">
               <div className="w-20 h-20 bg-indigo-600 rounded-3xl flex items-center justify-center mx-auto shadow-2xl shadow-indigo-600/20 mb-6">

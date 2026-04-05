@@ -1,0 +1,7 @@
+{
+  "name": "360 Panorama Creator",
+  "description": "Capture photos and stitch them into interactive 360 panoramas using your phone camera and Three.js.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
